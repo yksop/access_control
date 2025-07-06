@@ -4,9 +4,7 @@ import sys
 import select
 import tty
 import termios
-import cv2
 from pyzbar import pyzbar
-import numpy as np
 
 
 def get_key():
@@ -14,7 +12,7 @@ def get_key():
     old_settings = termios.tcgetattr(fd)
     try:
         tty.setraw(sys.stdin.fileno())
-        if select.select([sys.stdin], [], [], 0.1)[0]:
+        if select.select([sys.stdin], [], [], 0.01)[0]:
             return sys.stdin.read(1)
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
@@ -26,9 +24,8 @@ def check_qr_code(image_array):
     if qr_codes:
         for qr_code in qr_codes:
             data = qr_code.data.decode('utf-8')
-            print(f"QR Code trovato: {data}")
-        return True
-    return False
+            return True, data
+    return False, None
 
 
 picam2 = Picamera2()
@@ -38,39 +35,34 @@ camera_config = picam2.create_still_configuration(
     display="lores")
 picam2.configure(camera_config)
 
-# Abilita autofocus
-picam2.set_controls({"AfMode": 2, "AfTrigger": 0})  # AfMode 2 = Continuous AF
-
+picam2.set_controls({"AfMode": 2, "AfTrigger": 0})
 picam2.start_preview(Preview.QTGL)
 picam2.start()
 
-print("Premi SPAZIO per scattare foto, 'f' per focus manuale, 'q' per uscire")
+scan_interval = 0.05
+last_scan_time = 0
 
 while True:
-    key = get_key()
-    if key == ' ':
-        # Trigger autofocus prima dello scatto
-        picam2.set_controls({"AfTrigger": 1})
-        time.sleep(0.5)  # Aspetta che metta a fuoco
+    current_time = time.time()
 
-        # Cattura immagine in memoria
-        image_array = picam2.capture_array()
+    if current_time - last_scan_time >= scan_interval:
+        try:
+            image_array = picam2.capture_array("lores")
 
-        if check_qr_code(image_array):
-            timestamp = int(time.time())
-            filename = f"./files/qr_photo_{timestamp}.jpg"
-            cv2.imwrite(filename, cv2.cvtColor(image_array, cv2.COLOR_RGB2BGR))
-            print(f"Foto con QR salvata: {filename}")
-        else:
-            print("Nessun QR code trovato")
+            qr_found, qr_data = check_qr_code(image_array)
 
-    elif key == 'f':
-        # Trigger manuale del focus
-        picam2.set_controls({"AfTrigger": 1})
-        print("Focus attivato")
+            if qr_found:
 
-    elif key == 'q':
-        break
+                # final_image = picam2.capture_array("main")
+
+                print(f"QR Code: {qr_data}")
+
+                break
+
+            last_scan_time = current_time
+
+        except Exception as e:
+            print(f"Error during scanning: {e}")
+            last_scan_time = current_time
 
 picam2.stop()
-print("Camera chiusa")
