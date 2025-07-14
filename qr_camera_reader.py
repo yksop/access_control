@@ -18,6 +18,7 @@ import termios
 import time
 import threading
 import uuid
+import paho.mqtt.client as mqtt
 
 try:
     from picamera2 import Picamera2, Preview
@@ -31,10 +32,327 @@ INFLUX_TOKEN = "to6IrrBSsr9TC4lfA64puJ2K5p5agfhexdwJ0cR1plJB0yfN8xKRfTJKijYIpz9s
 INFLUX_ORG = "Unitn"
 INFLUX_BUCKET = "access_control"
 
+MQTT_BROKER = "localhost"
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
+MQTT_CLIENT_ID = "bnb_backend"
+
+MQTT_TOPICS = {
+    "guest_auth_request": "bnb/guest/auth/request",
+    "guest_auth_response": "bnb/guest/auth/response",
+    "qr_generate_request": "bnb/qr/generate/request",
+    "qr_generate_response": "bnb/qr/generate/response",
+    "qr_validate_request": "bnb/qr/validate/request",
+    "qr_validate_response": "bnb/qr/validate/response",
+    "access_event": "bnb/access/event",
+    "system_status": "bnb/system/status",
+    "guest_add_request": "bnb/guest/add/request",
+    "guest_add_response": "bnb/guest/add/response",
+    "guest_list_request": "bnb/guest/list/request",
+    "guest_list_response": "bnb/guest/list/response"
+}
+
 TEMP_QR_LIFETIME_SECONDS = 15
 MAX_AUTH_ATTEMPTS = 3
 AUTH_LOCKOUT_MINUTES = 10
 MASTER_SECRET = "BnB_MASTER_SECRET_2025"
+
+
+class MQTTHandler:
+    """Handles MQTT communication"""
+
+    def __init__(self, bnb_system):
+        self.bnb_system = bnb_system
+        self.client = mqtt.Client(client_id=MQTT_CLIENT_ID)
+        self.client.on_connect = self.on_connect
+        self.client.on_message = self.on_message
+        self.client.on_disconnect = self.on_disconnect
+        self.connected = False
+
+    def connect(self):
+        """Connect to MQTT broker"""
+        try:
+            self.client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
+            self.client.loop_start()
+            return True
+        except Exception as e:
+            print(f"MQTT connection error: {e}")
+            return False
+
+    def disconnect(self):
+        """Disconnect from MQTT broker"""
+        self.client.loop_stop()
+        self.client.disconnect()
+
+    def on_connect(self, client, userdata, flags, rc):
+        """Callback for MQTT connection"""
+        if rc == 0:
+            self.connected = True
+            print("Connected to MQTT broker")
+
+            for topic in [
+                MQTT_TOPICS["guest_auth_request"],
+                MQTT_TOPICS["qr_generate_request"],
+                MQTT_TOPICS["qr_validate_request"],
+                MQTT_TOPICS["guest_add_request"],
+                MQTT_TOPICS["guest_list_request"]
+            ]:
+                client.subscribe(topic)
+                print(f"Subscribed to {topic}")
+        else:
+            print(f"MQTT connection failed with code {rc}")
+
+    def on_disconnect(self, client, userdata, rc):
+        """Callback for MQTT disconnection"""
+        self.connected = False
+        print("Disconnected from MQTT broker")
+
+    def on_message(self, client, userdata, msg):
+        """Handle incoming MQTT messages"""
+        try:
+            topic = msg.topic
+            payload = json.loads(msg.payload.decode())
+            print(f"Received message on {topic}: {payload}")
+
+            if topic == MQTT_TOPICS["guest_auth_request"]:
+                self.handle_guest_auth_request(payload)
+            elif topic == MQTT_TOPICS["qr_generate_request"]:
+                self.handle_qr_generate_request(payload)
+            elif topic == MQTT_TOPICS["qr_validate_request"]:
+                self.handle_qr_validate_request(payload)
+            elif topic == MQTT_TOPICS["guest_add_request"]:
+                self.handle_guest_add_request(payload)
+            elif topic == MQTT_TOPICS["guest_list_request"]:
+                self.handle_guest_list_request(payload)
+
+        except Exception as e:
+            print(f"Error handling MQTT message: {e}")
+
+    def publish(self, topic, payload):
+        """Publish message to MQTT topic"""
+        try:
+            if self.connected:
+                self.client.publish(topic, json.dumps(payload))
+                return True
+            else:
+                print("MQTT not connected")
+                return False
+        except Exception as e:
+            print(f"Error publishing MQTT message: {e}")
+            return False
+
+    def handle_guest_auth_request(self, payload):
+        """Handle guest authentication request"""
+        try:
+            guest_id = payload.get("guest_id")
+            pin_code = payload.get("pin_code")
+            request_id = payload.get("request_id", str(uuid.uuid4()))
+
+            if not guest_id or not pin_code:
+                response = {
+                    "request_id": request_id,
+                    "success": False,
+                    "message": "Missing guest_id or pin_code"
+                }
+            else:
+                auth_success, auth_result = self.bnb_system.authenticator.authenticate_guest(
+                    guest_id, pin_code)
+
+                if auth_success:
+                    response = {
+                        "request_id": request_id,
+                        "success": True,
+                        "guest_data": {
+                            "guest_id": auth_result["guest_id"],
+                            "room": auth_result["room"],
+                            "check_in": auth_result["check_in"],
+                            "check_out": auth_result["check_out"]
+                        }
+                    }
+                else:
+                    response = {
+                        "request_id": request_id,
+                        "success": False,
+                        "message": auth_result
+                    }
+
+            self.publish(MQTT_TOPICS["guest_auth_response"], response)
+
+        except Exception as e:
+            response = {
+                "request_id": payload.get("request_id", "unknown"),
+                "success": False,
+                "message": f"Server error: {str(e)}"
+            }
+            self.publish(MQTT_TOPICS["guest_auth_response"], response)
+
+    def handle_qr_generate_request(self, payload):
+        """Handle QR generation request"""
+        try:
+            guest_id = payload.get("guest_id")
+            pin_code = payload.get("pin_code")
+            request_id = payload.get("request_id", str(uuid.uuid4()))
+
+            if not guest_id or not pin_code:
+                response = {
+                    "request_id": request_id,
+                    "success": False,
+                    "message": "Missing guest_id or pin_code"
+                }
+            else:
+                success, qr_file = self.bnb_system.authenticate_and_generate_qr(
+                    guest_id, pin_code)
+
+                if success:
+                    qr_data = self.bnb_system.temp_qr_manager.get_last_generated_qr()
+
+                    response = {
+                        "request_id": request_id,
+                        "success": True,
+                        "qr_data": qr_data,
+                        "qr_file": qr_file,
+                        "expires_in": TEMP_QR_LIFETIME_SECONDS
+                    }
+                else:
+                    response = {
+                        "request_id": request_id,
+                        "success": False,
+                        "message": qr_file
+                    }
+
+            self.publish(MQTT_TOPICS["qr_generate_response"], response)
+
+        except Exception as e:
+            response = {
+                "request_id": payload.get("request_id", "unknown"),
+                "success": False,
+                "message": f"Server error: {str(e)}"
+            }
+            self.publish(MQTT_TOPICS["qr_generate_response"], response)
+
+    def handle_qr_validate_request(self, payload):
+        """Handle QR validation request"""
+        try:
+            qr_data = payload.get("qr_data")
+            request_id = payload.get("request_id", str(uuid.uuid4()))
+
+            if not qr_data:
+                response = {
+                    "request_id": request_id,
+                    "success": False,
+                    "message": "Missing qr_data"
+                }
+            else:
+                valid, result = self.bnb_system.validate_access_qr(qr_data)
+
+                response = {
+                    "request_id": request_id,
+                    "success": valid,
+                    "message": result
+                }
+
+                if valid:
+                    self.publish(MQTT_TOPICS["access_event"], {
+                        "timestamp": datetime.now().isoformat(),
+                        "event_type": "access_granted",
+                        "message": result
+                    })
+
+            self.publish(MQTT_TOPICS["qr_validate_response"], response)
+
+        except Exception as e:
+            response = {
+                "request_id": payload.get("request_id", "unknown"),
+                "success": False,
+                "message": f"Server error: {str(e)}"
+            }
+            self.publish(MQTT_TOPICS["qr_validate_response"], response)
+
+    def handle_guest_add_request(self, payload):
+        """Handle add guest request"""
+        try:
+            guest_id = payload.get("guest_id")
+            room = payload.get("room")
+            check_in = payload.get("check_in")
+            check_out = payload.get("check_out")
+            request_id = payload.get("request_id", str(uuid.uuid4()))
+
+            if not all([guest_id, room, check_in, check_out]):
+                response = {
+                    "request_id": request_id,
+                    "success": False,
+                    "message": "Missing required fields"
+                }
+            else:
+                success, pin = self.bnb_system.add_guest(
+                    guest_id, room, check_in, check_out)
+
+                if success:
+                    response = {
+                        "request_id": request_id,
+                        "success": True,
+                        "guest_id": guest_id,
+                        "pin": pin,
+                        "room": room
+                    }
+                else:
+                    response = {
+                        "request_id": request_id,
+                        "success": False,
+                        "message": "Failed to add guest"
+                    }
+
+            self.publish(MQTT_TOPICS["guest_add_response"], response)
+
+        except Exception as e:
+            response = {
+                "request_id": payload.get("request_id", "unknown"),
+                "success": False,
+                "message": f"Server error: {str(e)}"
+            }
+            self.publish(MQTT_TOPICS["guest_add_response"], response)
+
+    def handle_guest_list_request(self, payload):
+        """Handle guest list request"""
+        try:
+            request_id = payload.get("request_id", str(uuid.uuid4()))
+
+            guests = self.bnb_system.get_active_guests_list()
+
+            response = {
+                "request_id": request_id,
+                "success": True,
+                "guests": guests
+            }
+
+            self.publish(MQTT_TOPICS["guest_list_response"], response)
+
+        except Exception as e:
+            response = {
+                "request_id": payload.get("request_id", "unknown"),
+                "success": False,
+                "message": f"Server error: {str(e)}"
+            }
+            self.publish(MQTT_TOPICS["guest_list_response"], response)
+
+    def publish_system_status(self):
+        """Publish system status"""
+        try:
+            status = {
+                "timestamp": datetime.now().isoformat(),
+                "active_qr_codes": self.bnb_system.temp_qr_manager.get_active_count(),
+                "qr_lifetime": TEMP_QR_LIFETIME_SECONDS,
+                "camera_available": CAMERA_AVAILABLE,
+                "locked_accounts": len([
+                    guest_id for guest_id, data in self.bnb_system.authenticator.failed_attempts.items()
+                    if self.bnb_system.authenticator._is_locked_out(guest_id)
+                ])
+            }
+
+            self.publish(MQTT_TOPICS["system_status"], status)
+
+        except Exception as e:
+            print(f"Error publishing system status: {e}")
 
 
 class TemporaryQRManager:
@@ -42,6 +360,7 @@ class TemporaryQRManager:
 
     def __init__(self):
         self.active_qrs = {}
+        self.last_generated = None
         self.cleanup_thread = threading.Thread(
             target=self._cleanup_expired, daemon=True)
         self.cleanup_thread.start()
@@ -77,7 +396,14 @@ class TemporaryQRManager:
             "expires_at": expires_at
         }
 
-        return json.dumps(final_qr, separators=(',', ':'))
+        qr_string = json.dumps(final_qr, separators=(',', ':'))
+        self.last_generated = qr_string
+
+        return qr_string
+
+    def get_last_generated_qr(self):
+        """Get last generated QR code for mobile app"""
+        return self.last_generated
 
     def validate_temp_qr(self, qr_string):
         """Validate temporary QR code"""
@@ -150,7 +476,6 @@ class GuestAuthenticator:
             return False, f"Account locked. Try again in {remaining} minutes"
 
         guest_data = self._get_guest_data(guest_id)
-        print(f"Guest data for {guest_id}: {guest_data}")
         if not guest_data:
             self._record_failed_attempt(guest_id)
             return False, "Guest not found"
@@ -202,8 +527,6 @@ class GuestAuthenticator:
         stored_pin = guest_data.get("pin")
         if not stored_pin:
             return False
-
-        # Simple PIN comparison (in production, use proper hashing)
         return stored_pin == pin_code
 
     def _is_booking_valid(self, guest_data):
@@ -212,10 +535,6 @@ class GuestAuthenticator:
             now = datetime.now()
             check_in = datetime.fromisoformat(guest_data["check_in"])
             check_out = datetime.fromisoformat(guest_data["check_out"])
-
-            print(
-                f"Checking booking validity: {check_in} → {check_out} (now: {now})")
-
             return check_in <= now <= check_out
         except Exception:
             return False
@@ -254,14 +573,13 @@ class GuestAuthenticator:
         else:
             self.failed_attempts[guest_id]["count"] += 1
 
-        # Lock account after max attempts
         if self.failed_attempts[guest_id]["count"] >= MAX_AUTH_ATTEMPTS:
             self.failed_attempts[guest_id]["locked_until"] = now + \
                 timedelta(minutes=AUTH_LOCKOUT_MINUTES)
 
 
 class BnBSystem:
-    """B&B system with pre-auth and temporary QR"""
+    """B&B system with MQTT integration"""
 
     def __init__(self):
         self.client = InfluxDBClient(
@@ -269,7 +587,23 @@ class BnBSystem:
         self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
         self.temp_qr_manager = TemporaryQRManager()
         self.authenticator = GuestAuthenticator(self.client)
+        self.mqtt_handler = MQTTHandler(self)
         self.picam2 = None
+
+        self.mqtt_handler.connect()
+
+        self.status_thread = threading.Thread(
+            target=self._publish_status_periodically, daemon=True)
+        self.status_thread.start()
+
+    def _publish_status_periodically(self):
+        """Publish system status every 30 seconds"""
+        while True:
+            try:
+                self.mqtt_handler.publish_system_status()
+                time.sleep(30)
+            except Exception:
+                time.sleep(30)
 
     def generate_guest_pin(self):
         """Generate secure 6-digit PIN"""
@@ -295,7 +629,6 @@ class BnBSystem:
             print(f"Guest {guest_id} added for {room}")
             print(f"Period: {check_in_date} → {check_out_date}")
             print(f"PIN: {pin}")
-            print(f"Share PIN securely with guest")
 
             return True, pin
 
@@ -303,15 +636,48 @@ class BnBSystem:
             print(f"Error adding guest: {e}")
             return False, None
 
+    def get_active_guests_list(self):
+        """Get list of active guests for MQTT response"""
+        try:
+            query = f'''
+            from(bucket: "{INFLUX_BUCKET}")
+            |> range(start: -30d)
+            |> filter(fn: (r) => r["_measurement"] == "authorized_guests")
+            |> filter(fn: (r) => r["_field"] == "active")
+            |> group(columns: ["guest_id", "room"])
+            |> last()
+            '''
+
+            query_api = self.client.query_api()
+            tables = query_api.query(query, org=INFLUX_ORG)
+
+            guests = []
+            if tables and tables[0].records:
+                for table in tables:
+                    for record in table.records:
+                        if record.get_value():
+                            guests.append({
+                                "guest_id": record.values.get("guest_id"),
+                                "room": record.values.get("room"),
+                                "pin": record.values.get("pin"),
+                                "check_in": record.values.get("check_in"),
+                                "check_out": record.values.get("check_out")
+                            })
+
+            return guests
+
+        except Exception as e:
+            print(f"Error getting guests list: {e}")
+            return []
+
     def authenticate_and_generate_qr(self, guest_id, pin_code):
         """Authenticate guest and generate temporary QR"""
-
         auth_success, auth_result = self.authenticator.authenticate_guest(
             guest_id, pin_code)
 
         if not auth_success:
             print(f"Authentication failed: {auth_result}")
-            return False, None
+            return False, auth_result
 
         guest_data = auth_result
 
@@ -341,6 +707,7 @@ class BnBSystem:
         valid, result = self.temp_qr_manager.validate_temp_qr(qr_string)
 
         if not valid:
+            self.log_access_event("unknown", "unknown", "entry", False, result)
             return False, result
 
         qr_data = result
@@ -616,6 +983,7 @@ class BnBSystem:
         """Show system status"""
         print("\nSYSTEM STATUS:")
         print("-" * 30)
+        print(f"MQTT connected: {self.mqtt_handler.connected}")
         print(
             f"Active temporary QR codes: {self.temp_qr_manager.get_active_count()}")
         print(f"QR code lifetime: {TEMP_QR_LIFETIME_SECONDS} seconds")
@@ -637,11 +1005,12 @@ class BnBSystem:
         """Close connections"""
         if self.picam2:
             self.picam2.stop()
+        self.mqtt_handler.disconnect()
         self.client.close()
 
 
 def main():
-    """Main application"""
+    """Main application with MQTT support"""
     system = BnBSystem()
 
     try:
@@ -651,17 +1020,15 @@ def main():
         print(f"Database connection error: {e}")
         return
 
-    print("\nEnhanced B&B Access Control System")
-    print("Security features: PIN auth + temporary QR codes")
-
     while True:
         print("\n=== MAIN MENU ===")
         print("1. Guest Authentication (Generate QR)")
         print("2. Access Scanner")
         print("3. Management")
-        print("4. Exit")
+        print("4. MQTT Status")
+        print("5. Exit")
 
-        choice = input("Choose option (1-4): ").strip()
+        choice = input("Choose option (1-5): ").strip()
 
         if choice == "1":
             system.guest_auth_interface()
@@ -670,6 +1037,12 @@ def main():
         elif choice == "3":
             system.management_interface()
         elif choice == "4":
+            print(
+                f"MQTT Status: {'Connected' if system.mqtt_handler.connected else 'Disconnected'}")
+            if not system.mqtt_handler.connected:
+                print("Attempting to reconnect...")
+                system.mqtt_handler.connect()
+        elif choice == "5":
             break
         else:
             print("Invalid option")
