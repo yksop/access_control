@@ -533,10 +533,23 @@ class GuestAuthenticator:
         """Check if booking is valid for current time"""
         try:
             now = datetime.now()
-            check_in = datetime.fromisoformat(guest_data["check_in"])
-            check_out = datetime.fromisoformat(guest_data["check_out"])
+            check_in_raw = guest_data["check_in"]
+            check_out_raw = guest_data["check_out"]
+
+            if isinstance(check_in_raw, str):
+                check_in = datetime.fromisoformat(check_in_raw)
+            else:
+                check_in = check_in_raw
+
+            if isinstance(check_out_raw, str):
+                check_out = datetime.fromisoformat(check_out_raw)
+            else:
+                check_out = check_out_raw
+
             return check_in <= now <= check_out
-        except Exception:
+
+        except Exception as e:
+            print(f"Error validating booking dates: {e}")
             return False
 
     def _is_locked_out(self, guest_id):
@@ -652,23 +665,58 @@ class BnBSystem:
             tables = query_api.query(query, org=INFLUX_ORG)
 
             guests = []
+            current_time = datetime.now()
+
             if tables and tables[0].records:
                 for table in tables:
                     for record in table.records:
                         if record.get_value():
-                            guests.append({
+                            guest_data = {
                                 "guest_id": record.values.get("guest_id"),
                                 "room": record.values.get("room"),
                                 "pin": record.values.get("pin"),
                                 "check_in": record.values.get("check_in"),
                                 "check_out": record.values.get("check_out")
-                            })
+                            }
+
+                            # Verifica se l'ospite è attualmente attivo
+                            if self._is_guest_currently_active(guest_data, current_time):
+                                guests.append(guest_data)
 
             return guests
 
         except Exception as e:
             print(f"Error getting guests list: {e}")
             return []
+
+    def _is_guest_currently_active(self, guest_data, current_time):
+        """Check if guest is currently active based on check-in/check-out dates"""
+        try:
+            check_in_raw = guest_data.get("check_in")
+            check_out_raw = guest_data.get("check_out")
+
+            if check_in_raw is None or check_out_raw is None:
+                return False
+
+            if isinstance(check_in_raw, str):
+                check_in = datetime.fromisoformat(check_in_raw)
+            else:
+                check_in = check_in_raw
+
+            if isinstance(check_out_raw, str):
+                check_out = datetime.fromisoformat(check_out_raw)
+            else:
+                check_out = check_out_raw
+
+            if check_in is None or check_out is None:
+                return False
+
+            return check_in <= current_time <= check_out
+
+        except Exception as e:
+            print(
+                f"Error parsing dates for guest {guest_data.get('guest_id', 'unknown')}: {e}")
+            return False
 
     def authenticate_and_generate_qr(self, guest_id, pin_code):
         """Authenticate guest and generate temporary QR"""
@@ -929,15 +977,61 @@ class BnBSystem:
                 return
 
             print("\nACTIVE GUESTS:")
-            print("-" * 40)
+            print("-" * 60)
+            print(
+                f"{'Guest ID':<15} {'Room':<10} {'PIN':<8} {'Check-in':<20} {'Check-out':<20}")
+            print("-" * 60)
+
+            current_time = datetime.now()
+            active_count = 0
 
             for table in tables:
                 for record in table.records:
                     if record.get_value():
-                        guest_id = record.values.get("guest_id")
-                        room = record.values.get("room")
-                        pin = record.values.get("pin")
-                        print(f"{guest_id} → {room} (PIN: {pin})")
+                        guest_data = {
+                            "guest_id": record.values.get("guest_id"),
+                            "room": record.values.get("room"),
+                            "pin": record.values.get("pin"),
+                            "check_in": record.values.get("check_in"),
+                            "check_out": record.values.get("check_out")
+                        }
+
+                        if self._is_guest_currently_active(guest_data, current_time):
+                            active_count += 1
+
+                            try:
+                                check_in_raw = guest_data["check_in"]
+                                check_out_raw = guest_data["check_out"]
+
+                                if isinstance(check_in_raw, str):
+                                    check_in_formatted = datetime.fromisoformat(
+                                        check_in_raw).strftime("%d/%m/%Y %H:%M")
+                                else:
+                                    check_in_formatted = check_in_raw.strftime(
+                                        "%d/%m/%Y %H:%M")
+
+                                if isinstance(check_out_raw, str):
+                                    check_out_formatted = datetime.fromisoformat(
+                                        check_out_raw).strftime("%d/%m/%Y %H:%M")
+                                else:
+                                    check_out_formatted = check_out_raw.strftime(
+                                        "%d/%m/%Y %H:%M")
+
+                            except Exception as e:
+                                print(
+                                    f"Error formatting dates for {guest_data['guest_id']}: {e}")
+                                check_in_formatted = str(
+                                    guest_data["check_in"])
+                                check_out_formatted = str(
+                                    guest_data["check_out"])
+
+                            print(
+                                f"{guest_data['guest_id']:<15} {guest_data['room']:<10} {guest_data['pin']:<8} {check_in_formatted:<20} {check_out_formatted:<20}")
+
+            if active_count == 0:
+                print("No guests are currently active")
+            else:
+                print(f"\nTotal active guests: {active_count}")
 
         except Exception as e:
             print(f"Error listing guests: {e}")
