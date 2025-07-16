@@ -2,18 +2,15 @@ import hashlib
 import hmac
 import qrcode
 import secrets
-import base64
 import json
 from datetime import datetime, timedelta
-from cryptography.fernet import Fernet
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
 import os
 import sys
 import select
 import tty
+import requests
 import termios
 import time
 import threading
@@ -56,6 +53,24 @@ TEMP_QR_LIFETIME_SECONDS = 15
 MAX_AUTH_ATTEMPTS = 3
 AUTH_LOCKOUT_MINUTES = 10
 MASTER_SECRET = "BnB_MASTER_SECRET_2025"
+
+TELEGRAM_BOT_TOKEN = "7827464792:AAENivILkga-fAAd6WwN8fraCYewEZ6kwQo"
+TELEGRAM_CHAT_ID = "936627045"
+
+
+def send_telegram_message(message):
+    """Send a message to a Telegram chat via bot."""
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message
+        }
+        response = requests.post(url, json=payload)
+        if response.status_code != 200:
+            print(f"Failed to send Telegram message: {response.text}")
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 
 class MQTTHandler:
@@ -679,7 +694,6 @@ class BnBSystem:
                                 "check_out": record.values.get("check_out")
                             }
 
-                            # Verifica se l'ospite è attualmente attivo
                             if self._is_guest_currently_active(guest_data, current_time):
                                 guests.append(guest_data)
 
@@ -766,6 +780,8 @@ class BnBSystem:
         self.log_access_event(guest_id, room, access_type,
                               True, "Access granted")
 
+        message = f"🏠 Access granted!\nGuest: {guest_id}\nRoom: {room}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        send_telegram_message(message)
         return True, f"Access granted - {guest_id} ({room})"
 
     def log_access_event(self, guest_id, room, access_type, success, message):
