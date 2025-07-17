@@ -9,6 +9,7 @@ from influxdb_client.client.write_api import SYNCHRONOUS
 import os
 import sys
 import select
+import socket
 import tty
 import requests
 import termios
@@ -28,11 +29,6 @@ INFLUX_URL = "http://localhost:8086"
 INFLUX_TOKEN = "to6IrrBSsr9TC4lfA64puJ2K5p5agfhexdwJ0cR1plJB0yfN8xKRfTJKijYIpz9s0JQ4axkl2FNgL3hOSCQT0g=="
 INFLUX_ORG = "Unitn"
 INFLUX_BUCKET = "access_control"
-
-MQTT_BROKER = "localhost"
-MQTT_PORT = 1883
-MQTT_KEEPALIVE = 60
-MQTT_CLIENT_ID = "bnb_backend"
 
 MQTT_TOPICS = {
     "guest_auth_request": "bnb/guest/auth/request",
@@ -71,6 +67,26 @@ def send_telegram_message(message):
             print(f"Failed to send Telegram message: {response.text}")
     except Exception as e:
         print(f"Telegram error: {e}")
+
+
+def get_local_ip():
+    """Get local IP address of the machine"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "127.0.0.1"
+
+
+MQTT_BROKER = os.getenv('MQTT_BROKER_IP', get_local_ip())
+MQTT_PORT = 1883
+MQTT_KEEPALIVE = 60
+MQTT_CLIENT_ID = "bnb_backend"
+
+print(f"MQTT Broker configured on: {MQTT_BROKER}:{MQTT_PORT}")
 
 
 class MQTTHandler:
