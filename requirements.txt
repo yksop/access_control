@@ -6,6 +6,10 @@ requests
 python-dotenv
 Pillow
 numpy
+Flask
+
+# Door lock (Raspberry Pi only; harmless to leave installed if unused)
+# RPi.GPIO
 
 # Raspberry Pi camera support (install only on the Pi itself; not
 # available/needed on a laptop where the system falls back to CLI mode)

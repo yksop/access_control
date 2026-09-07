@@ -56,6 +56,16 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 QR_OUTPUT_DIR = os.getenv("QR_OUTPUT_DIR", "./temp_qr")
 SNAPSHOT_DIR = os.getenv("SNAPSHOT_DIR", "./snapshots")
 
+# --- Door lock (optional hardware actuation) ---
+# Disabled by default. Set DOOR_LOCK_ENABLED=true once a relay is wired up.
+DOOR_LOCK_ENABLED = os.getenv("DOOR_LOCK_ENABLED", "false").lower() == "true"
+DOOR_LOCK_GPIO_PIN = int(os.getenv("DOOR_LOCK_GPIO_PIN", "17"))
+DOOR_UNLOCK_SECONDS = int(os.getenv("DOOR_UNLOCK_SECONDS", "5"))
+
+# --- Web management UI ---
+WEB_UI_HOST = os.getenv("WEB_UI_HOST", "0.0.0.0")
+WEB_UI_PORT = int(os.getenv("WEB_UI_PORT", "5000"))
+
 
 def validate_config():
     """Fail fast and loudly if required secrets are missing, instead of

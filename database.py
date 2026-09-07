@@ -61,18 +61,29 @@ class Database:
         return True
 
     def _get_user_data(self, user_id):
+        # Deliberately no `|> last()` here: if a user has been added under
+        # more than one zone over time, each zone is a distinct InfluxDB
+        # series (different tag set), so InfluxDB returns one table per
+        # series. `last()` only picks the last point *within* each table,
+        # and naively reading tables[0] can return a stale/revoked series
+        # instead of the actual most recent one. Instead we scan every
+        # record across every table and pick the single most recent point.
         query = f'''
         from(bucket: "{config.INFLUX_BUCKET}")
           |> range(start: -30d)
           |> filter(fn: (r) => r["_measurement"] == "authorized_users")
           |> filter(fn: (r) => r["user_id"] == "{user_id}")
           |> filter(fn: (r) => r["_field"] == "active")
-          |> last()
         '''
         try:
             tables = self.query_api.query(query, org=config.INFLUX_ORG)
-            if tables and tables[0].records:
-                record = tables[0].records[0]
+            latest_record = None
+            for table in tables:
+                for record in table.records:
+                    if latest_record is None or record.get_time() > latest_record.get_time():
+                        latest_record = record
+            if latest_record:
+                record = latest_record
                 return {
                     "user_id": record.values.get("user_id"),
                     "zone": record.values.get("zone"),

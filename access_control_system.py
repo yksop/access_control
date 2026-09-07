@@ -13,6 +13,7 @@ import config
 from authenticator import Authenticator
 from camera_scanner import CAMERA_AVAILABLE, CameraScanner
 from database import Database
+from gpio_lock import DoorLock
 from mqtt_handler import MQTTHandler
 from notifier import send_telegram_message, send_telegram_photo
 from qr_manager import TemporaryQRManager
@@ -28,6 +29,7 @@ class AccessControlSystem:
         self.mqtt_handler = MQTTHandler(self)
         self.camera_available = CAMERA_AVAILABLE
         self.scanner = CameraScanner(on_qr_scanned=self._scan_callback)
+        self.door_lock = DoorLock()
 
         self.mqtt_handler.connect()
 
@@ -102,6 +104,7 @@ class AccessControlSystem:
         qr_data = result
         user_id, zone, access_type = qr_data["user_id"], qr_data["zone"], qr_data["access_type"]
         self.log_access_event(user_id, zone, access_type, True, "Access granted")
+        self.door_lock.unlock()
 
         message = (
             f"Access granted\nUser: {user_id}\nZone: {zone}\n"

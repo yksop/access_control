@@ -35,8 +35,9 @@ def management_interface(system):
         print("3. List active users")
         print("4. View access log")
         print("5. System status")
-        print("6. Back to main menu")
-        choice = input("Choose option (1-6): ").strip()
+        print("6. Test door lock")
+        print("7. Back to main menu")
+        choice = input("Choose option (1-7): ").strip()
 
         if choice == "1":
             _add_user_flow(system)
@@ -49,6 +50,8 @@ def management_interface(system):
         elif choice == "5":
             _show_status(system)
         elif choice == "6":
+            system.door_lock.unlock()
+        elif choice == "7":
             break
         else:
             print("Invalid option")
